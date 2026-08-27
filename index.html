@@ -104,9 +104,9 @@
   <!-- Barra de confianza -->
   <div class="bg-black/10 border-t border-white/10">
     <div class="max-w-5xl mx-auto px-4 py-2 flex items-center justify-center gap-4 sm:gap-6 text-[11px] sm:text-xs text-[var(--c-primary-50)] flex-wrap">
-      <span class="flex items-center gap-1.5">🚚 Entrega a domicilio</span>
-      <span class="flex items-center gap-1.5">🔒 Compra segura</span>
-      <span class="flex items-center gap-1.5">💬 Atención por WhatsApp</span>
+      <span id="trustBadge1" class="hidden items-center gap-1.5"></span>
+      <span id="trustBadge2" class="hidden items-center gap-1.5"></span>
+      <span id="trustBadge3" class="hidden items-center gap-1.5"></span>
       <span id="trustHours" class="hidden items-center gap-1.5">🕒 <span id="trustHoursText"></span></span>
     </div>
   </div>
@@ -280,6 +280,13 @@
           <input id="cfgBusinessHours" type="text" placeholder="Ej. Lun-Vie 9:00-19:00 · Sáb 9:00-14:00" class="w-full border border-ink/15 rounded-xl px-3.5 py-2.5 text-sm">
           <p class="text-[11px] text-ink/40 mt-1">Se muestra como aviso en el encabezado. Déjalo vacío si no quieres mostrarlo.</p>
         </div>
+        <div>
+          <label class="text-sm font-semibold block mb-1">Barra de confianza (opcional)</label>
+          <p class="text-[11px] text-ink/40 mb-2">Hasta 3 textos cortos bajo el encabezado (incluye el emoji si quieres). Deja uno vacío para ocultarlo — por ejemplo, "Entrega a domicilio" no siempre aplica a todos los negocios.</p>
+          <input id="cfgTrustBadge1" type="text" placeholder="Ej. 🚚 Entrega a domicilio" class="w-full border border-ink/15 rounded-xl px-3.5 py-2.5 text-sm mb-2">
+          <input id="cfgTrustBadge2" type="text" placeholder="Ej. 🔒 Compra segura" class="w-full border border-ink/15 rounded-xl px-3.5 py-2.5 text-sm mb-2">
+          <input id="cfgTrustBadge3" type="text" placeholder="Ej. 💬 Atención por WhatsApp" class="w-full border border-ink/15 rounded-xl px-3.5 py-2.5 text-sm">
+        </div>
         <button onclick="saveGeneralConfig()" class="bg-[var(--c-primary-600)] hover:bg-[var(--c-primary-700)] text-white font-display font-700 rounded-xl px-5 py-2.5 text-sm">Guardar cambios</button>
         <span id="generalSavedMsg" class="hidden text-[var(--c-primary-600)] text-sm font-semibold ml-3">✓ Guardado</span>
       </div>
@@ -440,6 +447,9 @@ const DEFAULT_CONFIG = {
   logoUrl: '',
   whatsappNumber: '593987654321',
   businessHours: 'Lun-Vie 9:00-19:00 · Sáb 9:00-14:00',
+  trustBadge1: '🚚 Entrega a domicilio',
+  trustBadge2: '🔒 Compra segura',
+  trustBadge3: '💬 Atención por WhatsApp',
   primaryColor: '#123c69',
   accentColor: '#ff6b6b',
   bankAccounts: [
@@ -563,8 +573,8 @@ async function loadData(){
 }
 
 async function saveConfig(){
-  const { businessName, description, logoUrl, whatsappNumber, businessHours, primaryColor, accentColor, bankAccounts, deunaQrUrl, deunaInstructions } = config;
-  await writeCatalogFields({ businessName, description, logoUrl, whatsappNumber, businessHours, primaryColor, accentColor, bankAccounts, deunaQrUrl, deunaInstructions });
+  const { businessName, description, logoUrl, whatsappNumber, businessHours, trustBadge1, trustBadge2, trustBadge3, primaryColor, accentColor, bankAccounts, deunaQrUrl, deunaInstructions } = config;
+  await writeCatalogFields({ businessName, description, logoUrl, whatsappNumber, businessHours, trustBadge1, trustBadge2, trustBadge3, primaryColor, accentColor, bankAccounts, deunaQrUrl, deunaInstructions });
 }
 async function saveProducts(){
   await writeCatalogFields({ products });
@@ -738,6 +748,22 @@ function renderHeader(){
   }else{
     trustHours.classList.add('hidden');
     trustHours.classList.remove('flex');
+  }
+
+  renderTrustBadge('trustBadge1', config.trustBadge1);
+  renderTrustBadge('trustBadge2', config.trustBadge2);
+  renderTrustBadge('trustBadge3', config.trustBadge3);
+}
+
+function renderTrustBadge(id, text){
+  const el = document.getElementById(id);
+  if(text && text.trim()){
+    el.textContent = text.trim();
+    el.classList.remove('hidden');
+    el.classList.add('flex');
+  }else{
+    el.classList.add('hidden');
+    el.classList.remove('flex');
   }
 }
 
@@ -1137,6 +1163,9 @@ function openAdminPanel(){
   document.getElementById('cfgLogoUrl').value = config.logoUrl;
   document.getElementById('cfgWhatsapp').value = config.whatsappNumber;
   document.getElementById('cfgBusinessHours').value = config.businessHours;
+  document.getElementById('cfgTrustBadge1').value = config.trustBadge1 || '';
+  document.getElementById('cfgTrustBadge2').value = config.trustBadge2 || '';
+  document.getElementById('cfgTrustBadge3').value = config.trustBadge3 || '';
   document.getElementById('newAdminPassword').value = '';
   document.getElementById('confirmAdminPassword').value = '';
   document.getElementById('passwordUpdateMsg').classList.add('hidden');
@@ -1190,6 +1219,9 @@ async function saveGeneralConfig(){
   config.logoUrl = document.getElementById('cfgLogoUrl').value.trim();
   config.whatsappNumber = document.getElementById('cfgWhatsapp').value.trim().replace(/[^0-9]/g,'');
   config.businessHours = document.getElementById('cfgBusinessHours').value.trim();
+  config.trustBadge1 = document.getElementById('cfgTrustBadge1').value.trim();
+  config.trustBadge2 = document.getElementById('cfgTrustBadge2').value.trim();
+  config.trustBadge3 = document.getElementById('cfgTrustBadge3').value.trim();
   renderHeader();
   try{ await saveConfig(); flashSaved('generalSavedMsg'); }
   catch(err){ alert('No se pudieron guardar los cambios: ' + (err.message || 'error desconocido')); }
