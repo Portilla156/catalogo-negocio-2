@@ -235,7 +235,7 @@
         <button type="button" onclick="closeAdminLogin()" class="flex-1 border border-ink/15 rounded-xl py-2.5 text-sm font-semibold">Cancelar</button>
         <button type="submit" class="flex-1 bg-ink text-white rounded-xl py-2.5 text-sm font-semibold">Entrar</button>
       </div>
-      <p class="text-[10px] text-ink/30 text-center mt-3">🔒 La contraseña se verifica cifrada, nunca se guarda como texto plano.</p>
+      <p class="text-[10px] text-ink/30 text-center mt-3">🔒 Acceso protegido con autenticación segura (Firebase).</p>
     </form>
   </div>
 </div>
@@ -292,7 +292,7 @@
         <p class="text-xs text-ink/40">Por tu seguridad, la contraseña actual no se muestra en ningún lado. Escribe una nueva solo si quieres cambiarla.</p>
         <div>
           <label class="text-sm font-semibold block mb-1">Nueva contraseña</label>
-          <input id="newAdminPassword" type="password" autocomplete="new-password" placeholder="Mínimo 4 caracteres" class="w-full border border-ink/15 rounded-xl px-3.5 py-2.5 text-sm">
+          <input id="newAdminPassword" type="password" autocomplete="new-password" placeholder="Mínimo 6 caracteres" class="w-full border border-ink/15 rounded-xl px-3.5 py-2.5 text-sm">
         </div>
         <div>
           <label class="text-sm font-semibold block mb-1">Confirmar nueva contraseña</label>
@@ -417,24 +417,29 @@
    ESTADO Y CONFIGURACIÓN POR DEFECTO
    ========================================================================== */
 const STORAGE_KEYS = {
-  config: 'catalogo_config_v1',
-  products: 'catalogo_products_v1',
-  cart: 'catalogo_cart_v1',
-  loginLock: 'catalogo_login_lock_v1'
+  cart: 'catalogo_cart_v1'
 };
 
+/* ==========================================================================
+   FIREBASE (Firestore + Authentication vía REST API — sin SDK)
+   Todos los catálogos comparten un mismo proyecto Firebase. Cada negocio
+   tiene su propio documento en Firestore y su propio usuario de acceso,
+   así que lo que guarda cada dueño se ve igual en cualquier dispositivo.
+   ========================================================================== */
+const FIREBASE_API_KEY = 'AIzaSyAQqA3wWCAgj_u0tvmBI5UITYFxobs8els';
+const FIREBASE_PROJECT_ID = 'catalogos-5-negocios';
+const CATALOG_ID = 'negocio-2';
+const ADMIN_EMAIL = 'sebasporti156+negocio2@gmail.com';
+
 const DEFAULT_CONFIG = {
-  // ✏️  EDITA ESTA SECCIÓN (o hazlo desde el Panel de administración
-  //     una vez publicada la página) con los datos reales de este cliente.
+  // ✏️  Estos valores son el respaldo de fábrica: se usan solo si Firestore
+  //     no responde. Los datos reales se editan desde el Panel de
+  //     administración y viven en Firestore, no aquí.
   businessName: 'Negocio 2',
   description: 'Productos de calidad, entregados a tiempo en toda la ciudad.',
   logoUrl: '',
   whatsappNumber: '593987654321',
   businessHours: 'Lun-Vie 9:00-19:00 · Sáb 9:00-14:00',
-  // Hash SHA-256 de la contraseña por defecto "admin123".
-  // Nunca guardamos la contraseña como texto plano, ni siquiera la de fábrica.
-  // Cámbiala apenas publiques el sitio, desde Panel > General > Seguridad.
-  adminPasswordHash: '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9',
   primaryColor: '#123c69',
   accentColor: '#ff6b6b',
   bankAccounts: [
@@ -455,41 +460,101 @@ let products = [];
 let cart = []; // [{productId, qty}]
 
 /* ==========================================================================
-   PERSISTENCIA (localStorage)
+   PERSISTENCIA — Firestore (datos del negocio) + localStorage (carrito)
    ========================================================================== */
-// Convierte un texto en su huella SHA-256 (hexadecimal). Nunca se guarda ni se
-// envía la contraseña real, solo esta huella, que no se puede revertir al
-// texto original. Requiere un contexto seguro (https, o localhost) — por eso
-// el bot debe alojarse con https, como se indica en la guía.
-async function hashPassword(text){
-  if(!(window.crypto && window.crypto.subtle)){
-    throw new Error('SubtleCrypto no disponible en este contexto');
+
+/* --- Conversión entre el formato tipado de Firestore y objetos JS planos --- */
+function fsValueToJs(v){
+  if(v == null) return null;
+  if('stringValue' in v) return v.stringValue;
+  if('doubleValue' in v) return v.doubleValue;
+  if('integerValue' in v) return Number(v.integerValue);
+  if('booleanValue' in v) return v.booleanValue;
+  if('nullValue' in v) return null;
+  if('arrayValue' in v) return (v.arrayValue.values || []).map(fsValueToJs);
+  if('mapValue' in v) return fsFieldsToJs(v.mapValue.fields || {});
+  return null;
+}
+function fsFieldsToJs(fields){
+  const out = {};
+  for(const k in fields) out[k] = fsValueToJs(fields[k]);
+  return out;
+}
+function jsToFsValue(v){
+  if(typeof v === 'string') return { stringValue: v };
+  if(typeof v === 'number') return { doubleValue: v };
+  if(typeof v === 'boolean') return { booleanValue: v };
+  if(v === null || v === undefined) return { nullValue: null };
+  if(Array.isArray(v)) return { arrayValue: { values: v.map(jsToFsValue) } };
+  if(typeof v === 'object') return { mapValue: { fields: jsToFsFields(v) } };
+  return { nullValue: null };
+}
+function jsToFsFields(obj){
+  const out = {};
+  for(const k in obj) out[k] = jsToFsValue(obj[k]);
+  return out;
+}
+
+/* --- Lectura pública del catálogo (sin autenticación) --- */
+async function fetchCatalogFromFirestore(){
+  const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/catalogs/${CATALOG_ID}`;
+  const res = await fetch(url);
+  if(!res.ok) return null;
+  const data = await res.json();
+  return data.fields ? fsFieldsToJs(data.fields) : null;
+}
+
+/* --- Sesión de administrador (Firebase Authentication) --- */
+let authSession = null; // { idToken, refreshToken, expiresAt }
+
+async function firebaseSignIn(password){
+  const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: ADMIN_EMAIL, password, returnSecureToken: true })
+  });
+  const data = await res.json();
+  if(!res.ok) throw new Error((data.error && data.error.message) || 'AUTH_ERROR');
+  authSession = { idToken: data.idToken, refreshToken: data.refreshToken, expiresAt: Date.now() + Number(data.expiresIn) * 1000 };
+}
+
+async function ensureFreshToken(){
+  if(!authSession) throw new Error('NOT_SIGNED_IN');
+  if(Date.now() < authSession.expiresAt - 60000) return authSession.idToken;
+  const res = await fetch(`https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(authSession.refreshToken)}`
+  });
+  const data = await res.json();
+  if(!res.ok) throw new Error('REFRESH_FAILED');
+  authSession = { idToken: data.id_token, refreshToken: data.refresh_token, expiresAt: Date.now() + Number(data.expires_in) * 1000 };
+  return authSession.idToken;
+}
+
+/* --- Escritura autenticada (solo el dueño del negocio puede escribir) --- */
+async function writeCatalogFields(fieldsObj){
+  const idToken = await ensureFreshToken();
+  const mask = Object.keys(fieldsObj).map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
+  const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/catalogs/${CATALOG_ID}?${mask}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
+    body: JSON.stringify({ fields: jsToFsFields(fieldsObj) })
+  });
+  if(!res.ok){
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err.error && err.error.message) || 'WRITE_FAILED');
   }
-  const encoded = new TextEncoder().encode(text);
-  const hashBuffer = await window.crypto.subtle.digest('SHA-256', encoded);
-  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2,'0')).join('');
 }
 
 async function loadData(){
-  try{
-    const rawConfig = localStorage.getItem(STORAGE_KEYS.config);
-    config = rawConfig ? { ...DEFAULT_CONFIG, ...JSON.parse(rawConfig) } : { ...DEFAULT_CONFIG };
-  }catch(e){ config = { ...DEFAULT_CONFIG }; }
+  let remote = null;
+  try{ remote = await fetchCatalogFromFirestore(); }catch(e){ remote = null; }
 
-  // Migración: si existe una versión anterior con contraseña en texto plano,
-  // la convertimos a hash y borramos el texto plano de inmediato.
-  if(config.adminPassword){
-    try{
-      config.adminPasswordHash = await hashPassword(config.adminPassword);
-    }catch(e){ /* si no hay contexto seguro, se mantiene el hash por defecto */ }
-    delete config.adminPassword;
-    saveConfig();
-  }
-
-  try{
-    const rawProducts = localStorage.getItem(STORAGE_KEYS.products);
-    products = rawProducts ? JSON.parse(rawProducts) : [...DEFAULT_PRODUCTS];
-  }catch(e){ products = [...DEFAULT_PRODUCTS]; }
+  const { products: remoteProducts, ...remoteConfig } = remote || {};
+  config = remote ? { ...DEFAULT_CONFIG, ...remoteConfig } : { ...DEFAULT_CONFIG };
+  products = Array.isArray(remoteProducts) ? remoteProducts : [...DEFAULT_PRODUCTS];
 
   try{
     const rawCart = localStorage.getItem(STORAGE_KEYS.cart);
@@ -497,8 +562,13 @@ async function loadData(){
   }catch(e){ cart = []; }
 }
 
-function saveConfig(){ localStorage.setItem(STORAGE_KEYS.config, JSON.stringify(config)); }
-function saveProducts(){ localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(products)); }
+async function saveConfig(){
+  const { businessName, description, logoUrl, whatsappNumber, businessHours, primaryColor, accentColor, bankAccounts, deunaQrUrl, deunaInstructions } = config;
+  await writeCatalogFields({ businessName, description, logoUrl, whatsappNumber, businessHours, primaryColor, accentColor, bankAccounts, deunaQrUrl, deunaInstructions });
+}
+async function saveProducts(){
+  await writeCatalogFields({ products });
+}
 function saveCart(){ localStorage.setItem(STORAGE_KEYS.cart, JSON.stringify(cart)); }
 
 function uid(prefix){ return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
@@ -627,12 +697,12 @@ function relativeLuminance(r, g, b){
   return 0.2126 * canal(r) + 0.7152 * canal(g) + 0.0722 * canal(b);
 }
 
-function saveColors(){
+async function saveColors(){
   config.primaryColor = document.getElementById('cfgPrimaryColor').value;
   config.accentColor = document.getElementById('cfgAccentColor').value;
-  saveConfig();
   applyBrandColors();
-  flashSaved('colorsSavedMsg');
+  try{ await saveConfig(); flashSaved('colorsSavedMsg'); }
+  catch(err){ alert('No se pudieron guardar los colores: ' + (err.message || 'error desconocido')); }
 }
 
 function resetBrandColors(){
@@ -1038,56 +1108,22 @@ function closeAdminLogin(){
   document.getElementById('adminLoginOverlay').classList.remove('flex');
   releaseFocusTrap();
 }
-const MAX_LOGIN_ATTEMPTS = 5;
-const LOGIN_LOCK_MS = 60000; // 1 minuto
-
-function getLoginLockState(){
-  try{
-    const raw = localStorage.getItem(STORAGE_KEYS.loginLock);
-    return raw ? JSON.parse(raw) : { attempts: 0, lockedUntil: 0 };
-  }catch(e){ return { attempts: 0, lockedUntil: 0 }; }
-}
-function setLoginLockState(state){
-  localStorage.setItem(STORAGE_KEYS.loginLock, JSON.stringify(state));
-}
-
 async function submitAdminLogin(e){
   e.preventDefault();
   const value = document.getElementById('adminPasswordInput').value;
   const errorEl = document.getElementById('adminLoginError');
   errorEl.classList.add('hidden');
 
-  const lock = getLoginLockState();
-  const ahora = Date.now();
-  if(lock.lockedUntil && ahora < lock.lockedUntil){
-    const segundos = Math.ceil((lock.lockedUntil - ahora) / 1000);
-    errorEl.textContent = `Demasiados intentos fallidos. Espera ${segundos} segundos e inténtalo de nuevo.`;
-    errorEl.classList.remove('hidden');
-    return;
-  }
-
-  let hashed;
   try{
-    hashed = await hashPassword(value);
-  }catch(err){
-    errorEl.textContent = 'Tu navegador no permite verificar la contraseña en este modo (por ejemplo, si abriste el archivo con doble clic). Sube el archivo a un hosting con HTTPS para usar el panel.';
-    errorEl.classList.remove('hidden');
-    return;
-  }
-
-  if(hashed === config.adminPasswordHash){
-    setLoginLockState({ attempts: 0, lockedUntil: 0 });
+    await firebaseSignIn(value);
     closeAdminLogin();
     openAdminPanel();
-  }else{
-    const attempts = (lock.attempts || 0) + 1;
-    if(attempts >= MAX_LOGIN_ATTEMPTS){
-      setLoginLockState({ attempts: 0, lockedUntil: ahora + LOGIN_LOCK_MS });
-      errorEl.textContent = `Demasiados intentos fallidos. Espera ${LOGIN_LOCK_MS / 1000} segundos e inténtalo de nuevo.`;
-    }else{
-      setLoginLockState({ attempts, lockedUntil: 0 });
-      errorEl.textContent = `Contraseña incorrecta. Te quedan ${MAX_LOGIN_ATTEMPTS - attempts} intento(s).`;
-    }
+  }catch(err){
+    let msg = 'Contraseña incorrecta.';
+    const m = err.message || '';
+    if(m.includes('TOO_MANY_ATTEMPTS')) msg = 'Demasiados intentos fallidos. Espera unos minutos e inténtalo de nuevo.';
+    else if(m.includes('NETWORK')) msg = 'No se pudo conectar. Revisa tu conexión a internet.';
+    errorEl.textContent = msg;
     errorEl.classList.remove('hidden');
   }
 }
@@ -1148,15 +1184,15 @@ function flashSaved(id){
   setTimeout(() => el.classList.add('hidden'), 1800);
 }
 
-function saveGeneralConfig(){
+async function saveGeneralConfig(){
   config.businessName = document.getElementById('cfgBusinessName').value.trim() || DEFAULT_CONFIG.businessName;
   config.description = document.getElementById('cfgDescription').value.trim();
   config.logoUrl = document.getElementById('cfgLogoUrl').value.trim();
   config.whatsappNumber = document.getElementById('cfgWhatsapp').value.trim().replace(/[^0-9]/g,'');
   config.businessHours = document.getElementById('cfgBusinessHours').value.trim();
-  saveConfig();
   renderHeader();
-  flashSaved('generalSavedMsg');
+  try{ await saveConfig(); flashSaved('generalSavedMsg'); }
+  catch(err){ alert('No se pudieron guardar los cambios: ' + (err.message || 'error desconocido')); }
 }
 
 async function updateAdminPassword(){
@@ -1170,16 +1206,23 @@ async function updateAdminPassword(){
     msgEl.classList.remove('hidden');
   };
 
-  if(!pass1 || pass1.length < 4){ showMsg('La contraseña debe tener al menos 4 caracteres.', false); return; }
+  if(!pass1 || pass1.length < 6){ showMsg('La contraseña debe tener al menos 6 caracteres.', false); return; }
   if(pass1 !== pass2){ showMsg('Las contraseñas no coinciden.', false); return; }
 
   try{
-    config.adminPasswordHash = await hashPassword(pass1);
+    const idToken = await ensureFreshToken();
+    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:update?key=${FIREBASE_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken, password: pass1, returnSecureToken: true })
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error((data.error && data.error.message) || 'UPDATE_FAILED');
+    authSession = { idToken: data.idToken, refreshToken: data.refreshToken, expiresAt: Date.now() + Number(data.expiresIn) * 1000 };
   }catch(err){
-    showMsg('Tu navegador no permite esta operación en este modo. Sube el archivo a un hosting con HTTPS.', false);
+    showMsg('No se pudo actualizar la contraseña: ' + (err.message || 'error desconocido'), false);
     return;
   }
-  saveConfig();
   document.getElementById('newAdminPassword').value = '';
   document.getElementById('confirmAdminPassword').value = '';
   showMsg('✓ Contraseña actualizada correctamente.', true);
@@ -1227,21 +1270,21 @@ function removeBankAccountRow(id){
   config.bankAccounts = config.bankAccounts.filter(a => a.id !== id);
   renderBankAccountsAdmin();
 }
-function saveBankAccounts(){
+async function saveBankAccounts(){
   document.querySelectorAll('.bank-field').forEach(input => {
     const acc = config.bankAccounts.find(a => a.id === input.dataset.id);
     if(acc) acc[input.dataset.field] = input.value.trim();
   });
-  saveConfig();
-  flashSaved('bankSavedMsg');
+  try{ await saveConfig(); flashSaved('bankSavedMsg'); }
+  catch(err){ alert('No se pudieron guardar las cuentas: ' + (err.message || 'error desconocido')); }
 }
 
 /* --- Deuna --- */
-function saveDeuna(){
+async function saveDeuna(){
   config.deunaQrUrl = document.getElementById('cfgDeunaQr').value.trim();
   config.deunaInstructions = document.getElementById('cfgDeunaInstructions').value.trim();
-  saveConfig();
-  flashSaved('deunaSavedMsg');
+  try{ await saveConfig(); flashSaved('deunaSavedMsg'); }
+  catch(err){ alert('No se pudo guardar Deuna: ' + (err.message || 'error desconocido')); }
 }
 
 /* --- Productos --- */
@@ -1274,16 +1317,17 @@ function updateCategoryOptions(){
   document.getElementById('categoryOptions').innerHTML = categorias.map(c => `<option value="${escapeHtml(c)}">`).join('');
 }
 
-function toggleProductAvailability(id){
+async function toggleProductAvailability(id){
   const p = products.find(x => x.id === id);
   if(!p) return;
   p.available = p.available === false ? true : false;
-  saveProducts();
   renderAdminProducts();
   renderProducts();
+  try{ await saveProducts(); }
+  catch(err){ alert('No se pudo guardar el cambio: ' + (err.message || 'error desconocido')); }
 }
 
-function saveProduct(){
+async function saveProduct(){
   const editId = document.getElementById('prodEditId').value;
   const title = document.getElementById('prodTitle').value.trim();
   const price = parseFloat(document.getElementById('prodPrice').value);
@@ -1303,11 +1347,12 @@ function saveProduct(){
   }else{
     products.push({ id: uid('p'), title, price, imageUrl, description, available, category });
   }
-  saveProducts();
   renderAdminProducts();
   renderProducts();
   renderCartUI();
   cancelEditProduct();
+  try{ await saveProducts(); }
+  catch(err){ alert('No se pudo guardar el producto: ' + (err.message || 'error desconocido')); }
 }
 
 function editProduct(id){
@@ -1339,15 +1384,16 @@ function cancelEditProduct(){
   document.getElementById('prodCancelBtn').classList.add('hidden');
 }
 
-function deleteProduct(id){
+async function deleteProduct(id){
   if(!confirm('¿Eliminar este producto del catálogo?')) return;
   products = products.filter(p => p.id !== id);
   cart = cart.filter(i => i.productId !== id);
-  saveProducts();
   saveCart();
   renderAdminProducts();
   renderProducts();
   renderCartUI();
+  try{ await saveProducts(); }
+  catch(err){ alert('No se pudo eliminar el producto: ' + (err.message || 'error desconocido')); }
 }
 
 /* ==========================================================================
